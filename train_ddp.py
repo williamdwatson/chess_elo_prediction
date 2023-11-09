@@ -231,11 +231,20 @@ class PositionalEncoding(nn.Module):
         x = x + self.pe[:x.size(0)]
         return self.dropout(x)
 
-class model(nn.Module):
+class modelFlatten(nn.Module):
     
-    def __init__(self):
+    def __init__(self, number_of_moves: int) -> None:
+        """
+        Initializes the model which flattens the transformer output before passing it through fully connected layers.
+        This is slower and appears no better than `modelAvg`.
+
+        Parameters
+        ----------
+        number_of_moves : int
+            The total number of unique moves (for the `Embedding` layer size)
+        """
         super().__init__()
-        self.embedding = nn.Embedding(NUMBER_OF_MOVES+1, EMBEDDING_DIM, padding_idx=0)
+        self.embedding = nn.Embedding(number_of_moves+1, EMBEDDING_DIM, padding_idx=0)
         self.positional_encoding = PositionalEncoder(EMBEDDING_DIM, max_seq_len=SEQUENCE_LENGTH)
         # NOTE: This was trained using torch 1.7.1, so `batch_first` does not exist on `TransformerEncoderLayer`;
         # this necessitates the transposes of `moves` and `masks` in `forward`
@@ -278,6 +287,111 @@ class model(nn.Module):
         encoded = torch.transpose(self.positional_encoding.forward(self.embedding.forward(moves)), 0, 1)
         #encoded = torch.transpose(self.positional_encoding.forward(moves), 0, 1)
         return self.others.forward(torch.transpose(self.encoder.forward(encoded, src_key_padding_mask=masks), 0, 1))
+
+class modelAvg(nn.Module):
+    
+    def __init__(self, number_of_moves: int) -> None:
+        """
+        Initializes the model which uses a mean down the second dimension (and is therefore much lighter than `modelFlatten`);
+        this appears to achieve similar results.
+
+        Parameters
+        ----------
+        number_of_moves : int
+            The total number of unique moves (for the `Embedding` layer size)
+        """
+        super().__init__()
+        self.embedding = nn.Embedding(number_of_moves+1, EMBEDDING_DIM, padding_idx=0)
+        self.positional_encoding = PositionalEncoder(EMBEDDING_DIM, max_seq_len=SEQUENCE_LENGTH)
+        # NOTE: This was trained using torch 1.7.1, so `batch_first` does not exist on `TransformerEncoderLayer`;
+        # this necessitates the transposes of `moves` and `masks` in `forward`
+        encoder_layer = nn.TransformerEncoderLayer(EMBEDDING_DIM, 6, dim_feedforward=1024)
+        self.encoder = nn.TransformerEncoder(encoder_layer, 6)
+        self.others = nn.Sequential(
+            nn.Linear(SEQUENCE_LENGTH, 50),
+            nn.ReLU(),
+            nn.Linear(50, 25),
+            nn.ReLU(),
+            nn.Linear(25, 2)
+        )
+        self.float()
+    
+    def forward(self, moves: torch.Tensor, masks: torch.Tensor) -> torch.Tensor:
+        """
+        Computes the model forward pass
+
+        Parameters
+        ----------
+        moves : torch.Tensor
+            Tensor of the move indices
+        masks : torch.Tensor
+            Tensor of the masks for `moves`
+        
+        Returns
+        -------
+        torch.Tensor :
+            The model output
+        """
+        encoded = torch.transpose(self.positional_encoding.forward(self.embedding.forward(moves)), 0, 1)
+        after_transformer = torch.transpose(self.encoder.forward(encoded, src_key_padding_mask=masks), 0, 1)
+        return self.others.forward(torch.mean(after_transformer, dim=2))
+
+class modelLinear(nn.Module):
+
+    def __init__(self, number_of_moves: int) -> None:
+        """
+        Initializes the model; this version includes no transformer or positional encodings
+
+        Parameters
+        ----------
+        number_of_moves : int
+            The total number of unique moves (for the `Embedding` layer size)
+        """
+        self.model = nn.Sequential(
+                nn.Embedding(number_of_moves+1, EMBEDDING_DIM, padding_idx=0),
+                nn.Flatten(),
+                nn.Linear(EMBEDDING_DIM*SEQUENCE_LENGTH, 7500),
+                nn.ReLU(),
+                nn.BatchNorm1d(7500),
+                nn.Dropout(0.1),
+                nn.Linear(7500, 5000),
+                nn.ReLU(),
+                nn.BatchNorm1d(5000),
+                nn.Dropout(0.1),
+                nn.Linear(5000, 1000),
+                nn.ReLU(),
+                nn.BatchNorm1d(1000),
+                nn.Dropout(0.1),
+                nn.Linear(1000, 500),
+                nn.ReLU(),
+                nn.BatchNorm1d(500),
+                nn.Dropout(0.075),
+                nn.Linear(500, 100),
+                nn.ReLU(),
+                nn.BatchNorm1d(100),
+                nn.Dropout(0.05),
+                nn.Linear(100, 50),
+                nn.ReLU(),
+                nn.BatchNorm1d(50),
+                nn.Dropout(0.05),
+                nn.Linear(50, 2)
+            )
+    
+    def forward(self, moves: torch.Tensor) -> torch.Tensor:
+        """
+        Performs the forward pass
+
+        Parameters
+        ----------
+        moves : torch.Tensor
+            Tensor of the move indices
+        
+        Results
+        -------
+        torch.Tensor :
+            The model output
+        """
+        return self.model.forward(moves)
 
 def calc_lr(step: int, dim_embed: int, warmup_steps: int) -> float:
     """
@@ -403,7 +517,7 @@ def run_model(rank: int, world_size: int) -> None:
     setup(rank, world_size)
     train_dl, val_dl, test_dl = get_dataloaders(FILE_DIR, num_workers=world_size, worker_id=rank, batch_size=128 if rank == 0 else 256)
 
-    m = model().to(rank)
+    m = modelAvg().to(rank)
     net = DistributedDataParallel(m, device_ids=[rank], find_unused_parameters=True)
     criterion = nn.MSELoss(reduction='mean')
     optimizer = optim.Adam(net.parameters(), lr=1e-5)
