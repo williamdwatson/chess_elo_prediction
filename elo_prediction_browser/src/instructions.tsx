@@ -18,8 +18,7 @@ export default function Instructions() {
                     <li>The game should be input in algebraic notation, with each move separated by a space.</li>
                     <li>Move numbers (for instance the "1." in <i>1. e4 e5</i>) are permitted but not required.</li>
                     <li>Comments (enclosed in curly braces) will be ignored, as will move strength notation ("!", "?", and their derivatives).</li>
-                    <li>"+"s (indicating checks) are likewise ignored.</li>
-                    <li>Depending on the model selection, placing a "#" at the end (indicating checkmate) may or may not be ignored.</li>
+                    <li>"+"s (indicating checks) and "#"s (indicating checkmates) are likewise ignored, as are results at the end (such as "1-0" or "0-1").</li>
                     <li>Only games between 8 and 150 moves (i.e. plies, inclusive; that is, between 4 and 75 moves per player) can be used.</li>
                     <li>If base time is 0, then time will not be used as a feature.</li>
                 </ul>

@@ -343,6 +343,7 @@ class modelLinear(nn.Module):
         self.model = nn.Sequential(
                 nn.Embedding(number_of_moves+1, EMBEDDING_DIM, padding_idx=0),
                 nn.Flatten(),
+                nn.Dropout(0.05),
                 nn.Linear(EMBEDDING_DIM*SEQUENCE_LENGTH, 7500),
                 nn.ReLU(),
                 nn.BatchNorm1d(7500),
@@ -379,12 +380,63 @@ class modelLinear(nn.Module):
         moves : torch.Tensor
             Tensor of the move indices
         
-        Results
+        Returns
         -------
         torch.Tensor :
             The model output
         """
         return self.model.forward(moves)
+
+class modelTime(nn.Module):
+    
+    def __init__(self, number_of_moves: int):
+        """
+        Initializes the model; this version includes time information
+
+        Parameters
+        ----------
+        number_of_moves : int
+            The total number of unique moves (for the `Embedding` layer size)
+        """
+        super().__init__()
+        self.embedding = nn.Embedding(number_of_moves+1, EMBEDDING_DIM, padding_idx=0)
+        self.positional_encoding = PositionalEncoder(EMBEDDING_DIM, max_seq_len=SEQUENCE_LENGTH)
+        # NOTE: This was trained using torch 1.7.1, so `batch_first` does not exist on `TransformerEncoderLayer`;
+        # this necessitates the transposes of `moves` and `masks` in `forward`
+        encoder_layer = nn.TransformerEncoderLayer(EMBEDDING_DIM, 6, dim_feedforward=1024)
+        self.encoder = nn.TransformerEncoder(encoder_layer, 6)
+        self.others = nn.Sequential(
+            nn.Linear(SEQUENCE_LENGTH+2, 50),
+            nn.ReLU(),
+            nn.Linear(50, 25),
+            nn.ReLU(),
+            nn.Linear(25, 2)
+        )
+        self.float()
+    
+    def forward(self, moves: torch.Tensor, masks: torch.Tensor, base_times: torch.Tensor, bonus_times: torch.Tensor) -> torch.Tensor:
+        """
+        Computes the model forward pass
+
+        Parameters
+        ----------
+        moves : torch.Tensor
+            Tensor of the move indices
+        masks : torch.Tensor
+            Tensor of the masks for `moves`
+        base_time : torch.Tensor
+            Tensor of game base times in seconds
+        bonus_time : torch.Tensor
+            Tensor of game bonus times in seconds
+        
+        Returns
+        -------
+        torch.Tensor :
+            The model output
+        """
+        encoded = torch.transpose(self.positional_encoding.forward(self.embedding.forward(moves)), 0, 1)
+        after_transformer = torch.mean(torch.transpose(self.encoder.forward(encoded, src_key_padding_mask=masks), 0, 1), dim=2)
+        return self.others.forward(torch.hstack((after_transformer, base_times.unsqueeze(1), bonus_times.unsqueeze(1))))
 
 def calc_lr(step: int, dim_embed: int, warmup_steps: int) -> float:
     """
@@ -479,10 +531,12 @@ if __name__ == '__main__':
     train_dl, val_dl, test_dl = get_dataloaders(FILE_DIR, lengths=lengths)
     if torch.cuda.device_count() > 1:
         print('Using distributed training across {} GPUs'.format(torch.cuda.device_count()))
-        net = nn.DataParallel(modelAvg()).cuda()
+        net = nn.DataParallel(modelTime(number_of_moves)).cuda()
     else:
-        net = modelAvg(number_of_moves).to(DEVICE)
-    optimizer = optim.Adam(net.parameters(), lr=1e-5)
+        print('Training on one device')
+        net = modelTime(number_of_moves).to(DEVICE)
+    
+    optimizer = optim.Adam(filter(lambda p: p.requires_grad, net.parameters()), lr=1e-5)
     scheduler = Scheduler(optimizer, EMBEDDING_DIM, int(len(train_dl)/2)) #optim.lr_scheduler.LinearLR(optimizer, start_factor=1e-3, total_iters=10)
     criterion = nn.MSELoss(reduction='mean')
     
@@ -490,15 +544,15 @@ if __name__ == '__main__':
         os.mkdir('checkpoints')
 
     i = 0
+    losses: List[Tuple[Number, Number, Number]] = []
     for epoch in range(5):
-        losses: List[Tuple[Number, Number, Number]] = []
         net.train()
         with tqdm(total=len(train_dl), desc='Training epoch {}'.format(epoch+1)) as pbar:
             for black_elo, white_elo, time_base, time_bonus, result, checkmate, (moves, masks) in train_dl:
                 i += 1
                 optimizer.zero_grad()
                 elos = torch.stack((black_elo, white_elo), dim=1).to(DEVICE, dtype=torch.float32)
-                outputs = net.forward(moves.to(DEVICE), masks.to(DEVICE))
+                outputs = net.forward(moves.to(DEVICE), masks.to(DEVICE), time_base.to(DEVICE, dtype=torch.float32), time_bonus.to(DEVICE, dtype=torch.float32))
                 loss: torch.Tensor = criterion(outputs, elos)
                 loss.backward()
                 optimizer.step()
@@ -508,9 +562,6 @@ if __name__ == '__main__':
                     with torch.no_grad():
                         black_diff = torch.mean(torch.abs(elos[:, 0] - outputs[:, 0])).item()
                         white_diff = torch.mean(torch.abs(elos[:, 1] - outputs[:, 1])).item()
-                        # std_dev_black = outputs[:, 0].std().item()
-                        # std_dev_white = outputs[:, 1].std().item()
-                        # std_dev = (std_dev_black + std_dev_white)/2
                         l = loss.item()
                         losses.append((l, black_diff, white_diff))
                         pbar.set_postfix_str('Loss: {:.1f} | MAE black: {:.1f}, white: {:.1f}'.format(l, black_diff, white_diff))
@@ -523,13 +574,15 @@ if __name__ == '__main__':
         with open('train_stats_epoch_{}.pkl'.format(epoch+1), 'wb') as f:
             pickle.dump({'loss': [l[0] for l in losses], 'black_diff': [l[1] for l in losses], 'white_diff': [l[2] for l in losses]}, f)
         net.eval()
-        black_diffs: List[torch.float32] = []
-        white_diffs: List[torch.float32] = []
+        black_diffs: List[float] = []
+        white_diffs: List[float] = []
         with torch.no_grad():
             for black_elo, white_elo, time_base, time_bonus, result, checkmate, (moves, masks) in tqdm(val_dl, desc='Validating'):
                 elos = torch.stack((black_elo, white_elo), dim=1).to(DEVICE, dtype=torch.float32)
-                outputs = net.forward(moves.to(DEVICE), masks.to(DEVICE))
+                outputs = net.forward(moves.to(DEVICE), masks.to(DEVICE), time_base.to(DEVICE, dtype=torch.float32), time_bonus.to(DEVICE, dtype=torch.float32))
                 black_diffs.extend(torch.abs(elos[:, 0] - outputs[:, 0]).cpu().numpy())
                 white_diffs.extend(torch.abs(elos[:, 1] - outputs[:, 1]).cpu().numpy())
         with open('val_stats_epoch_{}.pkl'.format(epoch+1), 'wb') as f:
             pickle.dump({'black_diffs': black_diffs, 'white_diffs': white_diffs}, f)
+        black_diffs.clear()
+        white_diffs.clear()

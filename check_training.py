@@ -1,7 +1,7 @@
 import os, pickle, torch
 import matplotlib.pyplot as plt
 import numpy as np
-from train import model, modelAvg, get_dataloaders
+from train import modelAvg, modelTime, modelLinear, get_dataloaders
 from collections import OrderedDict
 from itertools import islice
 from tqdm import tqdm
@@ -33,7 +33,7 @@ plt.tight_layout()
 plt.savefig(os.path.join('images', 'diffs.png'))
 
 _, val_dl, __ = get_dataloaders('/mnt/csd_gpu/data')
-net = modelAvg().to('cpu')
+net = modelTime().to('cpu')
 
 state_dict = torch.load(os.path.join('checkpoints', 'checkpoint-{}.pth'.format(n)), map_location='cpu')
 new_state_dict = OrderedDict()
@@ -53,7 +53,7 @@ white_preds = []
 with torch.no_grad():
     for black_elo, white_elo, time_base, time_bonus, result, checkmate, (moves, masks) in tqdm(islice(val_dl, 25), total=25):
         elos = torch.stack((black_elo, white_elo), dim=1).to(dtype=torch.float32)
-        outputs = net.forward(moves, masks)
+        outputs = net.forward(moves, masks, time_base.to(dtype=torch.float32), time_bonus.to(dtype=torch.float32))
         black_diff = torch.abs(elos[:, 0] - outputs[:, 0])
         white_diff = torch.abs(elos[:, 1] - outputs[:, 1])
         black_diffs.extend(black_diff.numpy())
@@ -69,6 +69,9 @@ black_elos = np.array(black_elos)
 white_elos = np.array(white_elos)
 black_preds = np.array(black_preds)
 white_preds = np.array(white_preds)
+
+print('Average black difference:', black_diffs.mean(), '±', black_diffs.std())
+print('Average white differences:', white_diffs.mean(), '±', white_diffs.std())
 
 black_under = np.empty(2500)
 white_under = np.empty(2500)
