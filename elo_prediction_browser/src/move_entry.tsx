@@ -131,7 +131,7 @@ export default function MoveEntry() {
         // Set up the WebWorker for the inference
         // See https://github.com/jackylu0124/onnxruntime-web-worker-initialization-issue/tree/main/web-worker-001
         if (window.Worker) {
-            inferenceWorkerRef.current = new Worker(new URL("./inference.ts", import.meta.url), {type: "module"});
+            inferenceWorkerRef.current = new Worker(new URL("inference.ts", import.meta.url), {type: "module"});
             inferenceWorkerRef.current.addEventListener("message", e => {
                 setProcessing(false);
                 const [b, w] = e.data.result.data.map((v: number) => Math.round(v));
@@ -149,10 +149,12 @@ export default function MoveEntry() {
             }
             else {
                 console.error("Inference worker does not exist");
+                setBadMoves({title: "Inference worker does not exist", message: "The WebWorker used for inference does not exist, and so the model cannot be loaded."});
             }
         })
         .catch((err) => {
             console.error(err);
+            setBadMoves({title: "An error occurred", message: "An error occurred: " + err});
         });
     
         return () => {

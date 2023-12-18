@@ -4,10 +4,7 @@ var session_avg: ort.InferenceSession | undefined = undefined;
 var session_avg_time: ort.InferenceSession | undefined = undefined;
 
 onmessage = async (e) => {
-    // console.log("Inside onmessage() in \"inferenceWorker.js\"!");
-    // console.log("linear_blend_session:", linear_blend_session);
     const what = e.data[e.data.length-1];
-    // console.log("isForInitialization:", isForInitialization);
     if (what === "initialize") {
         const onnx_file_buffer1 = e.data[0];
         const onnx_file_buffer2 = e.data[1];
@@ -34,7 +31,8 @@ onmessage = async (e) => {
                 const result = (await session_avg_time.run(inference_args)).others_1;
                 postMessage({result: result, what: what});
             }
-        } catch (err) {
+        }
+        catch (err) {
             console.error(err);
         }
     }
