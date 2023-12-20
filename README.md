@@ -37,16 +37,28 @@ This repository contains a PyTorch transfomer-based approach for predicting ches
 3. `create_indices.py` generates a JSON mapping of every unique move to an integer index; `create_onehot.py` does the same thing except each value is now a list with zeros everywhere except a 1 at the index.  
 4. `create_embeddings.py` uses [`gensim's Word2Vec`](https://radimrehurek.com/gensim/models/word2vec.html) to create pretrained embeddings of each move using a window size of 3 and an embeddings size of 72. This isn't the approach used in the actual models, so is just there as legacy code. 
 ### Models
-There are three model options in `train.py` (`train_ddp.py` is an older version and has not been updated with all options):
-#### modelFlatten
-This model first passes the sequence of moves through an Embedding layer and then a Transformer Encoder. The results are then flattened and passed through linear layers until the black and white Elo are predicted.
 
-This approach is far slower and larger than it needs to be.
-#### modelAvg
+There are several main model options in `train.py` (`train_ddp.py` is an older version and has not been updated with all options):
+#### Main models
+![Model diagram](./chess_elo_diagram.svg)
+
+The main model approaches follow the diagram above.
+##### modelAvg
 This model first passes the sequence of moves through an Embedding layer and then a TransformerEncoder. It then takes an mean down the embedding dimension (so the result is the same length as the sequence) and passes the result through linear layers until the black and white Elo are predicted.
-#### modelTime
-This model is very similar to [modelAvg](#modelavg), except that after the mean it concatenates the base and bonus time values prior to the linear layers.
-#### modelLinear
+##### modelTime
+This model is the same as [modelAvg](#modelavg), except that after the mean it concatenates the base and bonus time values prior to the linear layers.
+##### modelResult
+This model is the same as [modelAvg](#modelavg), except that after the mean it concatenates the result prior to the linear layers.
+##### modelTimeResult
+This model is the same as [modelAvg](#modelavg), except that after the mean it concatenates the base and bonus times and the result prior to the linear layers.
+
+#### Other models
+A few other models were also experimented with.
+##### modelLinear
 This model first passes the sequence of moves through an Embedding layer. It then flattens the result and passes that through linear layers until the black and white Elo are predicted.
 
 This approach is faster to train and achieves similar results to the transformer-based approachs, but results in orders-of-magnitude more weights.
+##### modelFlatten
+This model first passes the sequence of moves through an Embedding layer and then a TransformerEncoder. The results are then flattened and passed through linear layers until the black and white Elo are predicted.
+
+This approach is far slower and larger than it needs to be (the worst of both the transformer and linear worlds).
